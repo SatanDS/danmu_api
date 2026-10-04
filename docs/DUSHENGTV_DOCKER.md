@@ -2,7 +2,7 @@
 
 Bot 透過 `http://127.0.0.1:9321` 取得彈幕，DuShengTV 客戶端繼續使用 Bot 的接口。即使已配置網域，Bot 仍使用本機位址，以避開 CDN 的回源超時及公網連線依賴。
 
-此部署從本倉庫建置映像；設定保存在 `config/.env`，持久化資料保存在 `data/`。只將 9321 映射到主機的 `127.0.0.1`。Bot 的本機連線不需要網域或另外開放防火牆端口；CDN 的對外接口按下方的 TLS 入口與 Bot 即時 IP 授權設定。
+此部署統一放在 `/opt/danmu`，從本倉庫建置映像；設定保存在 `/opt/danmu/config/.env`，持久化資料保存在 `/opt/danmu/data/`。下方彈幕服務命令均在 `/opt/danmu` 執行。只將 9321 映射到主機的 `127.0.0.1`。Bot 的本機連線不需要網域或另外開放防火牆端口；CDN 的對外接口按下方的 TLS 入口與 Bot 即時 IP 授權設定。
 
 **第一步：確認 Debian 12 上的 Docker 和端口。**
 
@@ -29,10 +29,9 @@ sudo apt-get install -y git openssl curl python3
 **第二步：克隆 DuShengTV 分支。**
 
 ```bash
-mkdir -p ~/services
-cd ~/services
-git clone --branch codex/dushengtv-docker --single-branch https://github.com/SatanDS/danmu_api.git danmu_api
-cd danmu_api
+mkdir -p /opt/danmu
+cd /opt/danmu
+git clone --branch codex/dushengtv-docker --single-branch https://github.com/SatanDS/danmu_api.git .
 git rev-parse --short HEAD
 ```
 
@@ -132,7 +131,7 @@ Nginx 只轉發以下兩條精確路徑，其餘路徑一律 404：
 
 先更新並啟動已提供 `/emby/cdn_origin` 接口的 Bot；其 API 設定需為 `api.status=true`，且能經 `127.0.0.1:<api.http_port>` 連線，預設端口為 8838。此部署支援 `api.http_url` 為 `127.0.0.1`、`localhost` 或 `0.0.0.0`；推薦沿用 loopback。Bot 的 `api.line_report_token` 已用於內部鑑權，這裡直接沿用，不重新產生或覆寫。
 
-在源站的彈幕倉庫執行，將 Bot 設定路徑換成實際宿主機檔案路徑；目前帳號需要讀取該檔案的權限：
+在源站的 `/opt/danmu` 執行，將 Bot 設定路徑換成實際宿主機檔案路徑；目前帳號需要讀取該檔案的權限：
 
 ```bash
 bash scripts/prepare-cdn-origin.sh
