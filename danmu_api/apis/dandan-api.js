@@ -17,7 +17,9 @@ import {
   extractEpisodeTitle, convertChineseNumber, parseFileName, createDynamicPlatformOrder, normalizeTitleForMatch,
   extractYear, titleMatches, extractAnimeInfo, extractEpisodeNumberFromTitle, extractSeasonNumberFromAnimeTitle, extractAnimeTitle
 } from "../utils/common-util.js";
-import { getTMDBChineseTitle, getTmdbSeasonBoundaries } from "../utils/tmdb-util.js";
+import { getTMDBChineseTitle, getTmdbExternalIds, getTmdbSeasonBoundaries } from "../utils/tmdb-util.js";
+import { getDoubanInfoByImdbId } from '../utils/douban-util.js';
+import { filterMovieCandidates, hasMovieProviderId, resolveMovieIdentity } from '../utils/dushengtv-match-util.js';
 import { applyMergeLogic, mergeDanmakuList, MERGE_DELIMITER, alignSourceTimelines, sanitizeUrl } from "../utils/merge-util.js";
 import { getHanjutvSourceLabel } from "../utils/hanjutv-util.js";
 import AIClient from '../utils/ai-util.js';
@@ -1920,6 +1922,61 @@ function findLegacySeasonPreferenceTitle(titles, season) {
   return null;
 }
 
+async function matchDuShengTVMovie(req, metadata, preferredPlatform) {
+  const detailStore = new Map();
+  const platforms = createMatchPlatformOrder(preferredPlatform);
+  let animes = [], identity = null;
+  if (hasMovieProviderId(metadata.providerIds)) {
+    identity = await resolveMovieIdentity(metadata.providerIds, {
+      getDoubanInfoByImdbId, getTmdbExternalIds,
+      tmdbConfigured: Boolean(globals.tmdbApiKey?.trim())
+    });
+    if (identity) {
+      // Only vendor links belonging to this verified subject enter the pool.
+      // Caller title/year, AI, mappings and remembered selections cannot replace it.
+      let detail;
+      try {
+        detail = await doubanSource.handleMovieById(identity.doubanId, animes, detailStore);
+      } catch {
+        log('warn', '[system] [dushengtv-match] Movie identity lookup is unavailable');
+      }
+      if (!detail) { animes = []; identity = null; }
+    }
+  } else {
+    const title = prepareQueryTitle(metadata.title);
+    const searchUrl = buildSearchAnimeUrl(req.url, title, null, null);
+    const response = await searchAnime(searchUrl, null, null, detailStore, platforms[0] || null);
+    const data = await response.json();
+    if (data?.success && Array.isArray(data.animes)) {
+      animes = filterMovieCandidates(data.animes, title, metadata.year);
+    }
+  }
+
+  let selectedAnime = null, selectedEpisode = null;
+  const candidates = animes.map(anime => ({ anime, data: getBangumiDataForMatch(anime, detailStore) }));
+  // Both pools have already established movie identity. Select a platform only;
+  // never run AI or the general matcher's permissive title/year fallback here.
+  for (const platform of [...new Set([...platforms, null])]) {
+    for (const { anime, data } of candidates) {
+      if (!data?.success || !Array.isArray(data.bangumi?.episodes)) continue;
+      const episode = data.bangumi.episodes.find(ep => !platform ||
+        getPlatformMatchScore(extractEpisodeTitle(ep.episodeTitle), platform) > 0);
+      if (episode) { selectedAnime = anime; selectedEpisode = episode; break; }
+    }
+    if (selectedEpisode) break;
+  }
+  const matches = selectedEpisode ? [AnimeMatch.fromJson({
+    episodeId: selectedEpisode.episodeId, animeId: selectedAnime.animeId,
+    animeTitle: selectedAnime.animeTitle, episodeTitle: selectedEpisode.episodeTitle,
+    type: selectedAnime.type, typeDescription: selectedAnime.typeDescription,
+    shift: 0, imageUrl: selectedAnime.imageUrl, url: selectedEpisode.url || ''
+  })] : [];
+  return jsonResponse({
+    errorCode: 0, success: true, errorMessage: matches.length ? '' : (getAddAnimeError(detailStore) || ''),
+    isMatched: matches.length > 0, matches, ...(identity ? { identity } : {})
+  });
+}
+
 // Extracted function for POST /api/v2/match
 export async function matchAnime(url, req, clientIp, validatedMetadata = null) {
   try {
@@ -1954,6 +2011,9 @@ export async function matchAnime(url, req, clientIp, validatedMetadata = null) {
     // Only internal callers may supply validated metadata; the public request
     // body continues to use the normal filename parser.
     const parsed = validatedMetadata ? { ...validatedMetadata } : await extractTitleSeasonEpisode(cleanFileName);
+    if (validatedMetadata?.type === 'Movie') {
+      return await matchDuShengTVMovie(req, parsed, preferredPlatform);
+    }
     if (validatedMetadata && globals.titleToChinese) {
       parsed.title = await getTMDBChineseTitle(parsed.title, parsed.season, parsed.episode);
     }
@@ -2506,7 +2566,7 @@ async function fetchMergedComments(url, animeTitle, commentId) {
 }
 
 // Extracted function for GET /api/v2/comment/:commentId
-export async function getComment(path, queryFormat, segmentFlag, clientIp, includeDuration = false) {
+export async function getComment(path, queryFormat, segmentFlag, clientIp, includeDuration = false, options = {}) {
   const commentId = parseInt(path.split("/").pop());
   let animeTitle = findAnimeTitleById(commentId);
   let url = findUrlById(commentId);
@@ -2515,8 +2575,10 @@ export async function getComment(path, queryFormat, segmentFlag, clientIp, inclu
   if (url?.startsWith('local:')) {
     return getCommentByUrl(url, queryFormat, segmentFlag, includeDuration);
   }
+  // DuShengTV has already handled local selection; never overwrite its verified
+  // provider identity with another title-based local match. Public calls keep it.
   // 分段请求不会用到本地兜底结果，直接跳过这次全量扫描（本地资源多时它是白跑的开销）。
-  const localResource = segmentFlag ? null : await (async () => {
+  const localResource = segmentFlag || options.skipLocalFallback ? null : await (async () => {
     try {
       const { findLocalDanmu } = await import('../utils/local-danmu-store.js');
       const [localAnimeId] = findAnimeIdByCommentId(commentId);

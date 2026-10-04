@@ -3,8 +3,9 @@
 export const DUSHENGTV_PATH = '/api/v1/dushengtv/danmaku';
 const MAX_RESPONSE = 12 * 1024 * 1024;
 const encoder = new TextEncoder();
+const providerNames = new Map([['douban', 'Douban'], ['imdb', 'Imdb'], ['tmdb', 'Tmdb']]);
 const result = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
-const unavailable = message => ({ available: false, comments: [], message });
+const unavailable = (message, reason) => ({ available: false, comments: [], message, ...(reason ? { reason } : {}) });
 class AdapterError extends Error {
   constructor(message, status = 502) { super(message); this.status = status; }
 }
@@ -31,7 +32,19 @@ export function metadataFrom(input) {
     return value;
   };
   const year = number('year', 1800, 2200);
-  return { title, type, ...(year === undefined || type === 'Episode' ? {} : { year }), ...(type === 'Episode' ? { season: number('season', 0, 999, true), episode: number('episode', 0, 99999, true) } : {}) };
+  const suppliedIds = input.providerIds ?? {};
+  if (typeof suppliedIds !== 'object' || Array.isArray(suppliedIds) || Object.keys(suppliedIds).length > 16) throw new AdapterError('影片外部编号无效', 400);
+  const providerIds = {};
+  for (const [key, value] of Object.entries(suppliedIds)) {
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(key) || typeof value !== 'string' || value.length > 128 || /[\u0000-\u001f\u007f]/.test(value)) throw new AdapterError('影片外部编号无效', 400);
+    const name = providerNames.get(key.toLowerCase());
+    if (!name || !value.trim()) continue;
+    const id = value.trim();
+    if (!(name === 'Imdb' ? /^tt[0-9]{1,16}$/ : /^[1-9][0-9]{0,15}$/).test(id)
+        || (providerIds[name] && providerIds[name] !== id)) throw new AdapterError('影片外部编号无效', 400);
+    providerIds[name] = id;
+  }
+  return { title, type, ...(year === undefined || type === 'Episode' ? {} : { year }), ...(Object.keys(providerIds).length ? { providerIds } : {}), ...(type === 'Episode' ? { season: number('season', 0, 999, true), episode: number('episode', 0, 99999, true) } : {}) };
 }
 export function normalizeComments(rows) {
   if (!Array.isArray(rows)) throw new AdapterError('弹幕源返回的内容格式无效');
@@ -68,10 +81,14 @@ export function createDuShengTVHandler({ match, getComments, findLocal, readLoca
     await initialize();
     if (metadata.type === 'Episode' && (!metadata.season || !metadata.episode)) return unavailable('特殊季或第 0 集暂不支持自动匹配，请在播放器导入本地弹幕');
     let comments, selection;
-    if (localEnabled && findLocal && readLocal) {
+    // Title-only local uploads cannot prove the identity of a movie with an
+    // external ID. Resolve that ID before considering any remote comments.
+    const identifiedMovie = metadata.type === 'Movie' && Object.keys(metadata.providerIds || {}).length > 0;
+    if (!identifiedMovie && (metadata.type !== 'Movie' || Number.isInteger(metadata.year)) && localEnabled && findLocal && readLocal) {
       const local = await findLocal({ ...metadata, type: metadata.type === 'Episode' ? 'tv' : 'movie', season: metadata.season ?? 1 });
       // Do not attach title-level/movie comments to an arbitrary episode.
-      if (local && (metadata.type !== 'Episode' || Number(local.episode) === metadata.episode)) {
+      if (local && (metadata.type !== 'Episode' || Number(local.episode) === metadata.episode)
+          && (metadata.type !== 'Movie' || local.year === metadata.year)) {
         const stored = await readLocal(local.resourceKey);
         if (stored?.comments) { comments = stored.comments; selection = { source: 'local', animeTitle: metadata.title, episodeTitle: metadata.type === 'Episode' ? `S${metadata.season}E${metadata.episode}` : metadata.title }; }
       }
@@ -81,22 +98,26 @@ export function createDuShengTVHandler({ match, getComments, findLocal, readLoca
       const fileName = `${metadata.title}${metadata.year && metadata.type !== 'Episode' ? ` (${metadata.year})` : ''}${metadata.type === 'Episode' ? ` S${String(metadata.season).padStart(2, '0')}E${String(metadata.episode).padStart(2, '0')}` : ''}`;
       const matched = await readResponse(await match(fileName, metadata));
       if (matched.success === false) throw new AdapterError('弹幕匹配服务暂时不可用，请稍后重试');
-      if (matched.isMatched !== true || !Array.isArray(matched.matches) || matched.matches.length !== 1) return unavailable('没有找到确定匹配的弹幕，可检查影片标题与季集资料，或导入本地弹幕');
+      if (matched.isMatched !== true || !Array.isArray(matched.matches) || matched.matches.length !== 1) return unavailable('無彈幕匹配', 'NO_MATCH');
       const chosen = matched.matches[0], episodeId = Number(chosen?.episodeId);
       if (!Number.isSafeInteger(episodeId) || episodeId <= 0) throw new AdapterError('弹幕源返回了无效的匹配编号');
       const mediaType = `${chosen.type || ''} ${chosen.typeDescription || ''}`;
       const movie = /\b(?:movie|film)\b|电影|電影|剧场版|劇場版/i.test(mediaType);
       const series = /\b(?:tv|tvseries|series|show)\b|电视剧|電視劇|连续剧|連續劇/i.test(mediaType);
       if ((metadata.type === 'Movie' && series && !movie) || (metadata.type === 'Episode' && movie && !series)) {
-        return unavailable('匹配结果的影片类型不一致，请检查影片资料或导入本地弹幕');
+        return unavailable('無彈幕匹配', 'TYPE_MISMATCH');
       }
       // Only an ID from the matcher is used. Never follow a client/matcher supplied URL.
-      const data = await readResponse(await getComments(episodeId));
+      const data = await readResponse(await getComments(episodeId, metadata));
       comments = data.comments;
       selection = { episodeId, animeTitle: String(chosen.animeTitle || metadata.title).slice(0, 256), episodeTitle: String(chosen.episodeTitle || '').slice(0, 256) };
+      if (/^[1-9][0-9]{0,15}$/.test(matched.identity?.doubanId || '') && ['Douban', 'Imdb', 'Tmdb'].includes(matched.identity?.matchedBy)) {
+        selection.doubanId = matched.identity.doubanId;
+        selection.matchedBy = matched.identity.matchedBy;
+      }
     }
     const normalized = normalizeComments(comments);
-    if (!normalized.length) return unavailable('已匹配影片，但目前没有可用弹幕');
+    if (!normalized.length) return unavailable('無彈幕匹配', 'EMPTY_COMMENTS');
     return { available: true, comments: normalized, match: selection };
   }
   return async function handle(req, { token, localEnabled = false } = {}) {

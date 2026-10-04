@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDuShengTVHandler, DUSHENGTV_PATH, normalizeComments } from './dushengtv-api.js';
+import { createDuShengTVHandler, DUSHENGTV_PATH, metadataFrom, normalizeComments } from './dushengtv-api.js';
 
 const token = 'test-only-'.padEnd(64, 'x');
 const movie = { title: 'A film', type: 'Movie', year: 2024 };
@@ -56,6 +56,73 @@ test('special season/episode zero never falls through to a first-episode match',
     assert.equal(response.status, 200); assert.equal(response.data.available, false); assert.match(response.data.message, /特殊/);
   }
   assert.equal(calls.match.length, 0);
+});
+
+test('external IDs are canonicalized and invalid or conflicting IDs are rejected', () => {
+  assert.deepEqual(metadataFrom({ ...movie, providerIds: { IMDb: 'tt29308412', douban: '33458979', Tmdb: '123', Other: 'ignored' } }).providerIds,
+    { Imdb: 'tt29308412', Douban: '33458979', Tmdb: '123' });
+  assert.equal(metadataFrom({ ...movie, providerIds: JSON.parse('{"__proto__":"1","constructor":"2"}') }).providerIds, undefined);
+  assert.equal(metadataFrom({ ...movie, providerIds: { Douban: '', Imdb: ' ' } }).providerIds, undefined,
+    'empty Emby metadata fields mean no external ID is available');
+  for (const providerIds of [[], { Douban: 'https://movie.douban.com/subject/33458979/' }, { Imdb: 'tt1?secret' },
+    { Douban: '0' }, { Douban: 33458979 }, { Douban: '1', douban: '2' }, { Tmdb: '1'.repeat(129) }]) {
+    assert.throws(() => metadataFrom({ ...movie, providerIds }), /外部编号/);
+  }
+});
+
+test('ID-bound movies skip local title-only uploads and pass identity through the matcher and comment reader', async () => {
+  const metadata = { ...movie, providerIds: { Imdb: 'tt29308412' } };
+  const { request } = fixture({
+    findLocal: async () => { assert.fail('A title-only upload must not override an external ID'); },
+    readLocal: async () => { assert.fail('A title-only upload must not override an external ID'); },
+    match: async (_name, received) => {
+      assert.deepEqual(received, metadata);
+      return reply({ isMatched: true, matches: [{ episodeId: 42, type: 'movie' }],
+        identity: { doubanId: '33458979', matchedBy: 'Imdb' } });
+    },
+    getComments: async (id, received) => {
+      assert.equal(id, 42); assert.deepEqual(received, metadata);
+      return reply({ comments: [{ time: 1, text: 'same work' }] });
+    }
+  });
+  const response = await request(metadata, { localEnabled: true });
+  assert.equal(response.data.available, true);
+  assert.equal(response.data.match.doubanId, '33458979');
+  assert.equal(response.data.match.matchedBy, 'Imdb');
+});
+
+test('local movie shortcuts require the exact known year', async () => {
+  for (const input of [movie, { title: movie.title, type: 'Movie' }]) {
+    const { request } = fixture({
+      findLocal: async () => ({ resourceKey: 'uncertain-year', year: null }),
+      readLocal: async () => assert.fail('Do not guess which same-title local movie was uploaded'),
+      match: async () => reply({ isMatched: false, matches: [] })
+    });
+    assert.equal((await request(input, { localEnabled: true })).data.available, false);
+  }
+});
+
+test('no match or empty comments displays only the requested no-match message', async () => {
+  const missing = fixture({ match: async () => reply({ isMatched: false, matches: [] }) });
+  const empty = fixture({ getComments: async () => reply({ comments: [] }) });
+  assert.deepEqual((await missing.request()).data, { available: false, comments: [], message: '無彈幕匹配', reason: 'NO_MATCH' });
+  assert.deepEqual((await empty.request()).data, { available: false, comments: [], message: '無彈幕匹配', reason: 'EMPTY_COMMENTS' });
+});
+
+test('concurrent requests for different external movie IDs never share a match job', async () => {
+  let release;
+  const blocker = new Promise(resolve => { release = resolve; });
+  const ids = [];
+  const { request } = fixture({ match: async (_name, metadata) => {
+    ids.push(metadata.providerIds.Imdb);
+    await blocker;
+    return reply({ isMatched: false, matches: [] });
+  } });
+  const requests = ['tt29308412', 'tt1234567'].map(Imdb => request({ ...movie, providerIds: { Imdb } }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(ids.sort(), ['tt1234567', 'tt29308412']);
+  release();
+  await Promise.all(requests);
 });
 
 test('series premiere year is not used as a later season release year; local SxxExx titles retain season', async () => {

@@ -113,6 +113,22 @@ export default class DoubanSource extends BaseSource {
 
   async getEpisodes(id) {}
 
+  // Resolve one authoritative movie subject without searching for its title.
+  async handleMovieById(doubanId, curAnimes, detailStore = null) {
+    if (typeof doubanId !== 'string' || !/^[1-9]\d{0,15}$/.test(doubanId)) return null;
+    const response = await getDoubanDetail(doubanId);
+    const detail = response?.data;
+    if (!detail || String(detail.id) !== doubanId || detail.type !== 'movie' ||
+        detail.subtype !== 'movie' || detail.is_tv === true || typeof detail.title !== 'string' ||
+        !detail.title.trim()) return null;
+    const subject = {
+      layout: 'subject', target_id: doubanId, type_name: '电影',
+      target: { title: detail.title, cover_url: detail.cover_url || detail.pic?.normal || '' }
+    };
+    await this.handleAnimes([subject], detail.title, curAnimes, detailStore, null, new Map([[doubanId, response]]));
+    return detail;
+  }
+
   /**
    * 处理搜索结果
    * @param {Array} sourceAnimes 原始数据
@@ -121,7 +137,7 @@ export default class DoubanSource extends BaseSource {
    * @param {Map} detailStore 详情缓存
    * @param {number|null} querySeason 目标季度
    */
-  async handleAnimes(sourceAnimes, queryTitle, curAnimes, detailStore = null, querySeason = null) {
+  async handleAnimes(sourceAnimes, queryTitle, curAnimes, detailStore = null, querySeason = null, resolvedDetails = null) {
     const doubanAnimes = [];
 
     // 添加错误处理，确保sourceAnimes是数组
@@ -163,7 +179,7 @@ export default class DoubanSource extends BaseSource {
         log("info", "[douban] doubanId: ", doubanId, anime?.target?.title, animeType);
 
         // 获取平台详情页面url
-        const response = await getDoubanDetail(doubanId);
+        const response = resolvedDetails?.get(doubanId) || await getDoubanDetail(doubanId);
 
         const results = [];
 

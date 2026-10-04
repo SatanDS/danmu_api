@@ -30,10 +30,10 @@ const handleDuShengTV = createDuShengTVHandler({
     const url = new URL('http://localhost/api/v2/match');
     // Emby metadata is already validated. Preserve exact titles and avoid treating
     // a show's first-air year as a later season's release year.
-    const parsed = metadata.type === 'local' ? null : { title: metadata.title, season: metadata.season ?? null, episode: metadata.episode ?? null, year: metadata.type === 'Movie' ? metadata.year : undefined };
+    const parsed = metadata.type === 'local' ? null : { title: metadata.title, type: metadata.type, providerIds: metadata.providerIds, season: metadata.season ?? null, episode: metadata.episode ?? null, year: metadata.type === 'Movie' ? metadata.year : undefined };
     return matchAnime(url, new Request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileName }) }), null, parsed);
   },
-  getComments: episodeId => getComment(`/api/v2/comment/${episodeId}`, 'json', false, null),
+  getComments: episodeId => getComment(`/api/v2/comment/${episodeId}`, 'json', false, null, false, { skipLocalFallback: true }),
   findLocal: findLocalDanmu, readLocal: getLocalDanmu,
   initialize: () => initializePersistentCaches(globals.deployPlatform)
 });
