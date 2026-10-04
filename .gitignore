@@ -1,6 +1,12 @@
 .idea
-package-lock.json
 node_modules
 .env
 .cache
 dist
+data/
+backups/
+.validation/
+*.log
+certs/
+config/cdn-auth.env
+__pycache__/

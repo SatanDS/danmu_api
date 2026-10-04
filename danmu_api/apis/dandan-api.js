@@ -1921,7 +1921,7 @@ function findLegacySeasonPreferenceTitle(titles, season) {
 }
 
 // Extracted function for POST /api/v2/match
-export async function matchAnime(url, req, clientIp) {
+export async function matchAnime(url, req, clientIp, validatedMetadata = null) {
   try {
     // 获取请求体
     const body = await req.json();
@@ -1951,7 +1951,12 @@ export async function matchAnime(url, req, clientIp) {
     log("info", `[system] [match] Processing anime match for query: ${fileName}`);
     log("info", `[system] [match] Parsed cleanFileName: ${cleanFileName}, preferredPlatform: ${preferredPlatform}`);
 
-    const parsed = await extractTitleSeasonEpisode(cleanFileName);
+    // Only internal callers may supply validated metadata; the public request
+    // body continues to use the normal filename parser.
+    const parsed = validatedMetadata ? { ...validatedMetadata } : await extractTitleSeasonEpisode(cleanFileName);
+    if (validatedMetadata && globals.titleToChinese) {
+      parsed.title = await getTMDBChineseTitle(parsed.title, parsed.season, parsed.episode);
+    }
     const originalTitle = prepareQueryTitle(parsed.title);
     const originalSeason = parsed.season;
     const originalEpisode = parsed.episode;

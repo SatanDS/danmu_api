@@ -18,10 +18,27 @@ import { startFavoriteScheduler, stopFavoriteScheduler } from './utils/favorite-
 import { formatHostForUrl, listenOnAllInterfaces } from './utils/server-listen-util.js';
 
 // 读取 Node HTTP 请求体的原始字节，避免多字节字符和上传文件在分块读取时被破坏。
-async function readRequestBody(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  return Buffer.concat(chunks);
+async function readRequestBody(req, maxBytes = Infinity) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let bytes = 0;
+    const finish = (error, body) => {
+      req.off('data', onData); req.off('end', onEnd); req.off('error', onError); req.off('aborted', onAborted);
+      if (error) {
+        // The peer may abort while an oversized body is being discarded.
+        req.once('error', () => {}); req.resume(); reject(error);
+      } else resolve(body);
+    };
+    const onData = chunk => {
+      bytes += chunk.length;
+      if (bytes > maxBytes) finish(Object.assign(new Error('Request body too large'), { statusCode: 413 }));
+      else chunks.push(chunk);
+    };
+    const onEnd = () => finish(null, Buffer.concat(chunks));
+    const onError = error => finish(error);
+    const onAborted = () => finish(new Error('Request aborted'));
+    req.on('data', onData); req.once('end', onEnd); req.once('error', onError); req.once('aborted', onAborted);
+  });
 }
 
 // =====================
@@ -316,6 +333,16 @@ process.on('SIGINT', () => cleanupWatcher(0));
 function createServer() {
   return http.createServer(async (req, res) => {
     try {
+      // 容器存活检查不依赖鉴权、缓存、外部弹幕源或请求体解析。
+      if ((req.method === 'GET' || req.method === 'HEAD') && req.url?.split('?')[0] === '/healthz') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store'
+        });
+        res.end(req.method === 'HEAD' ? undefined : '{"status":"ok"}');
+        return;
+      }
+
       // 构造完整的请求 URL，反向代理场景优先使用客户端原始协议
       const scheme = resolvePublicRequestProtocol(req);
       const fullUrl = `${scheme}://${req.headers.host}${req.url}`;
@@ -346,7 +373,7 @@ function createServer() {
       // 异步读取 POST/PUT 请求的请求体
       let body;
       if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
-        body = await readRequestBody(req);
+        body = await readRequestBody(req, new URL(fullUrl).pathname === '/api/v1/dushengtv/danmaku' ? 16384 : Infinity);
       }
 
       // 创建一个 Web API 兼容的 Request 对象
@@ -399,6 +426,11 @@ function createServer() {
       // 发送响应数据
       res.end(buffer);
     } catch (error) {
+      if (error.statusCode === 413) {
+        res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8', 'Connection': 'close' });
+        res.end(JSON.stringify({ available: false, comments: [], message: '请求内容过大' }));
+        return;
+      }
       console.error('Server error:', error);
       res.statusCode = 500;
       res.end('Internal Server Error');

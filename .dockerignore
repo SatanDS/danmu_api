@@ -1,0 +1,16 @@
+.git
+.github
+node_modules
+.cache
+data
+backups
+certs
+config/cdn-auth.env
+__pycache__
+.env
+.env.*
+**/.env
+**/.env.*
+!config/.env.example
+*.log
+dist

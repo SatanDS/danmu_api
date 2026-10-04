@@ -6,6 +6,8 @@
 LogVar 弹幕 API 服务器
 </h2>
 
+本分支包含 **DuShengTV 客戶端適配與 Docker 部署**：[Debian 12 部署教學、Bot 接入與 CDN 回源設定](docs/DUSHENGTV_DOCKER.md)。請從本分支建置映像；上游 Docker Hub 映像未包含本分支的專用接口。
+
 [![GitHub](https://img.shields.io/badge/-GitHub-181717?logo=github)](https://github.com/huangxd-/danmu_api)
 ![GitHub forks](https://img.shields.io/github/forks/huangxd-/danmu_api)
 ![GitHub Repo stars](https://img.shields.io/github/stars/huangxd-/danmu_api)

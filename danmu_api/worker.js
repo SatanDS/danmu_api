@@ -8,6 +8,8 @@ import AIClient from './utils/ai-util.js';
 import { getBangumi, getComment, getCommentByUrl, getSegmentComment, matchAnime, searchAnime, searchEpisodes } from "./apis/dandan-api.js";
 import { handleFavoriteAdd, handleFavoriteList, handleFavoriteRefresh, handleFavoriteRemove, handleFavoriteSchedule } from "./apis/favorite-api.js";
 import { getFongmiDanmaku } from "./apis/clients/fongmi-api.js";
+import { createDuShengTVHandler, DUSHENGTV_PATH } from './apis/clients/dushengtv-api.js';
+import { findLocalDanmu, getLocalDanmu } from './utils/local-danmu-store.js';
 import { handleConfig, handleUI, handleLogs, handleClearLogs, handleDeploy, handleClearCache, handleReqRecords, handleCacheAnimes } from "./apis/system-api.js";
 import { handleForwardTrace } from "./apis/forward-trace-api.js";
 import { handleSetEnv, handleAddEnv, handleDelEnv, handleAiVerify, handleDandanplayVerify } from "./apis/env-api.js";
@@ -23,6 +25,18 @@ import {
 } from "./utils/cookie-util.js";
 
 let globals;
+const handleDuShengTV = createDuShengTVHandler({
+  match: (fileName, metadata) => {
+    const url = new URL('http://localhost/api/v2/match');
+    // Emby metadata is already validated. Preserve exact titles and avoid treating
+    // a show's first-air year as a later season's release year.
+    const parsed = metadata.type === 'local' ? null : { title: metadata.title, season: metadata.season ?? null, episode: metadata.episode ?? null, year: metadata.type === 'Movie' ? metadata.year : undefined };
+    return matchAnime(url, new Request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileName }) }), null, parsed);
+  },
+  getComments: episodeId => getComment(`/api/v2/comment/${episodeId}`, 'json', false, null),
+  findLocal: findLocalDanmu, readLocal: getLocalDanmu,
+  initialize: () => initializePersistentCaches(globals.deployPlatform)
+});
 
 async function handleRequest(req, env, deployPlatform, clientIp) {
   // 加载全局变量和环境变量配置
@@ -39,6 +53,11 @@ async function handleRequest(req, env, deployPlatform, clientIp) {
     await judgeLocalRedisValid(path);
   }
   await judgeRedisValid(path);
+  if (path === DUSHENGTV_PATH) {
+    // Dedicated server-to-server endpoint: header authentication never places the
+    // service token into a logged URL, and cannot invoke management endpoints.
+    return handleDuShengTV(req, { token: globals.token, localEnabled: globals.sourceOrderArr.includes('local') });
+  }
   if (!globals.aiValid && globals.aiBaseUrl && globals.aiModel && globals.aiApiKey && path !== "/favicon.ico" && path !== "/robots.txt") {
     const ai = new AIClient({
       baseURL: globals.aiBaseUrl,

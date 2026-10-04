@@ -1,0 +1,22 @@
+# Optional TLS origin for remote CDN nodes. Prepare certs and Bot auth first.
+# docker compose -f compose.yaml -f compose.cdn.yaml up -d --wait
+services:
+  cdn-origin:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - ./config/cdn-auth.env
+    environment:
+      NGINX_ENVSUBST_FILTER: '^(DUSHENG_CDN_AUTH_TOKEN|DUSHENG_BOT_API_PORT)$$'
+    depends_on:
+      danmu-api:
+        condition: service_healthy
+    volumes:
+      - ./deploy/nginx-cdn-origin.conf:/etc/nginx/templates/default.conf.template:ro
+      - ./certs:/etc/nginx/certs:ro
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"

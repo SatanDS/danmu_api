@@ -349,11 +349,11 @@ test('persistent cache regression: Local Redis priority and independent backends
         const read = syncFs.readFileSync; const copy = syncFs.copyFileSync;
         const denied = () => Object.assign(new Error('permission denied'), { code: 'EACCES' });
         const readMock = mock.method(syncFs, 'readFileSync', (name, ...args) => {
-          if (String(name).endsWith('/' + unreadable)) throw denied();
+          if (path.basename(String(name)) === unreadable) throw denied();
           return read(name, ...args);
         });
         const copyMock = mock.method(syncFs, 'copyFileSync', (name, ...args) => {
-          if (String(name).endsWith('/' + unreadable)) throw denied();
+          if (path.basename(String(name)) === unreadable) throw denied();
           return copy(name, ...args);
         });
         syncBuiltinESMExports();
@@ -902,8 +902,8 @@ test('persistent cache regression: Local Redis priority and independent backends
       assert.equal(backend.has('favoriteCache'), false);
     });
   `;
-  const result = spawnSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', script], {
-    encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024,
+  const result = spawnSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module'], {
+    input: script, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024,
     env: { ...process.env, NODE_TEST_CONTEXT: '' },
   });
   assert.ifError(result.error);
@@ -4961,6 +4961,20 @@ test('local source configuration and search', async t => {
         assert.deepEqual(result.matches, [], 'an unuploaded episode must not match a different local episode by array index');
       }
     }
+  });
+
+  await t.test('internal DuShengTV metadata preserves titles and episodes without accepting public overrides', async () => {
+    resetState();
+    const metadata = { title: '逐玉', season: 1, episode: 5 };
+    const request = () => new NodeFetchRequest('http://localhost/api/v2/match', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fileName: '不存在的作品 S99E99.mkv', validatedMetadata: metadata })
+    });
+    const internal = await (await matchAnime(new URL('http://localhost/api/v2/match'), request(), null, metadata)).json();
+    assert.equal(internal.isMatched, true);
+    assert.equal(internal.matches[0].episodeTitle, '【local】 第5集');
+    const external = await (await matchAnime(new URL('http://localhost/api/v2/match'), request(), null)).json();
+    assert.equal(external.isMatched, false, 'metadata in a public request body must not override filename parsing');
   });
 
   await t.test('one uploaded TV episode keeps its configured priority against a complete remote series', async child => {
