@@ -4,6 +4,60 @@ Bot 透過 `http://127.0.0.1:9321` 取得彈幕，DuShengTV 客戶端繼續使�
 
 此部署統一放在 `/opt/danmu`，從本倉庫建置映像；設定保存在 `/opt/danmu/config/.env`，持久化資料保存在 `/opt/danmu/data/`。下方彈幕服務命令均在 `/opt/danmu` 執行。只將 9321 映射到主機的 `127.0.0.1`。Bot 的本機連線不需要網域或另外開放防火牆端口；CDN 的對外接口按下方的 TLS 入口與 Bot 即時 IP 授權設定。
 
+**已有部署：升級共享彈幕資料庫快取。**
+
+在伺服器執行：
+
+```bash
+cd /opt/danmu
+git pull --ff-only origin codex/dushengtv-docker
+docker compose build --pull danmu-api
+docker compose up -d --no-deps danmu-api
+curl --fail http://127.0.0.1:9321/healthz
+```
+
+原有 `config/.env`、Bot Token 和 `data/` 掛載保持有效，無須重新初始化或清空資料。首次成功抓取後會建立 `/opt/danmu/data/dushengtv-danmaku.sqlite`（容器內 `/app/.cache/dushengtv-danmaku.sqlite`）。Docker 使用最新 Node 22 映像，內建 SQLite 需要 Node 22.13+；不支援時保留原即時查詢行為並在日誌提示，不會刪除既有資料庫。
+
+播放一部取得遠端彈幕的影片後，可只讀檢查資料庫條目數和容量，不會輸出 Token、影片名稱或彈幕內容：
+
+```bash
+cd /opt/danmu
+docker compose exec -T danmu-api node --input-type=module < scripts/inspect-dushengtv-cache.mjs
+```
+
+正常會顯示 `exists:true`、`entries` 大於 0。同一影片再次播放不會再新增一份條目；只有本地匯入或尚未匹配成功時可以仍是 0。
+
+在管理頁的「快取配置」或 `/opt/danmu/config/.env` 可調整以下設定；檔案設定支援熱更新，無須重啟：
+
+```dotenv
+DUSHENGTV_CACHE_ENABLED=true
+DUSHENGTV_CACHE_DAYS=14
+DUSHENGTV_CACHE_MAX_MB=512
+```
+
+- `DUSHENGTV_CACHE_DAYS`：7–30 天，預設 14。修改後立即按新天數判定既有資料是否過期。
+- `DUSHENGTV_CACHE_MAX_MB`：內容容量 64–4096 MiB，預設 512。超過時按最後訪問時間淘汰；SQLite 索引及 WAL 另需空間。資料頁會重用，定期清理空閒頁。
+- `DUSHENGTV_CACHE_ENABLED=false`：停用此快取但保留資料庫，重新啟用可繼續使用。與 `LOCAL_CACHE_ENABLED`、`COMMENT_CACHE_MINUTES` 及 `COMMENT_CACHE_MIN_COUNT` 獨立。
+
+同作品／同集由所有使用者共享。有效期內直接讀本地資料；到期後首次訪問才向來源更新，相同作品的併發訪問共用更新。只有非空成功結果才以 SQLite 交易替換舊資料；來源限頻、超時、無匹配或空結果會繼續使用舊的成功彈幕，並回傳 `cache.stale=true`。失敗後 60 秒內不重複更新。沒有舊快取時仍顯示「無彈幕匹配」或原來的服務錯誤。7–30 天決定刷新週期，到期本身不刪除成功內容；只有容量不足時按最後訪問時間淘汰，正在更新的舊結果受保護。每小時維護回收空閒資料頁，不會定時全庫向來源採集。
+
+資料庫鍵區分外部 ID、電影／劇集與季集，不降低原本的作品匹配要求。來源及匹配／輸出規則變更會使用新鍵，本地手動上傳仍即時優先。保存內容不包含使用者、裝置、Token 或 IP。這項快取減少重複採集，不能保證第一次批量抓取不同作品不受來源限頻。
+
+管理頁既有「清除快取」只清理其列出的記憶體／搜尋／ID 資料，**不刪除此 SQLite 資料庫**。需要備份或完全重建此庫時，先停止彈幕容器；不要在運行中只複製主檔而漏掉 WAL：
+
+```bash
+cd /opt/danmu
+docker compose stop danmu-api
+cache_backup_dir="backups/danmaku-$(date +%Y%m%d-%H%M%S)"
+mkdir -p -- "$cache_backup_dir"
+for cache_file in data/dushengtv-danmaku.sqlite data/dushengtv-danmaku.sqlite-wal data/dushengtv-danmaku.sqlite-shm; do
+  if [ -f "$cache_file" ]; then cp -p -- "$cache_file" "$cache_backup_dir/"; fi
+done
+docker compose start danmu-api
+```
+
+若明確要清空，完成備份後再次 `docker compose stop danmu-api`，只刪除上述三個 `data/dushengtv-danmaku.sqlite*` 精確檔案，再 `docker compose start danmu-api`。不要刪除整個 `data/`，其中還有本地上傳和其他持久資料。
+
 **第一步：確認 Debian 12 上的 Docker 和端口。**
 
 在伺服器 SSH 終端執行：

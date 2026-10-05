@@ -1,8 +1,13 @@
 import { globals } from '../configs/globals.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { log } from './log-util.js'
 import { Anime } from "../models/dandan-model.js";
 import { simpleHash } from "./codec-util.js";
 import { loadFavorites, resolveFavoriteForSearchKeyword, saveFavorites } from "./favorite-util.js";
+// Keep persistent refreshes separate from the legacy URL/title-only caches.
+const freshDuShengTVFetch = new AsyncLocalStorage();
+export const withFreshDuShengTVFetch = fn => freshDuShengTVFetch.run(true, fn);
+export const isFreshDuShengTVFetch = () => freshDuShengTVFetch.getStore() === true;
 let fs, path;
 let nodeModulesPromise;
 async function loadFileCacheModules() {
@@ -315,6 +320,7 @@ export function isSearchCacheValid(keyword) {
 
 // 获取搜索缓存
 export function getSearchCache(keyword, detailsMap = null) {
+    if (isFreshDuShengTVFetch()) return null;
     // 收藏剧集永久缓存优先命中（无 TTL、无数量上限）
     const favorite = resolveFavoriteForSearchKeyword(keyword);
     if (favorite) {
@@ -345,6 +351,7 @@ export function getSearchCache(keyword, detailsMap = null) {
 
 // 设置搜索缓存
 export function setSearchCache(keyword, results, detailsMap = null) {
+    if (isFreshDuShengTVFetch()) return;
     const details = collectUniqueAnimeDetails(detailsMap);
 
     // 写入前先清理所有过期条目
@@ -397,6 +404,7 @@ export function isCommentCacheValid(videoUrl) {
 
 // 获取弹幕缓存
 export function getCommentCache(videoUrl) {
+    if (isFreshDuShengTVFetch()) return null;
     if (isCommentCacheValid(videoUrl)) {
         log("info", `[cache] Using comment cache for "${videoUrl}"`);
         return globals.commentCache.get(videoUrl).comments;
@@ -406,6 +414,7 @@ export function getCommentCache(videoUrl) {
 
 // 设置弹幕缓存
 export function setCommentCache(videoUrl, comments) {
+    if (isFreshDuShengTVFetch()) return;
     // 写入前先清理所有过期条目
     sweepExpiredCache(globals.commentCache, globals.commentCacheMinutes, 'commentCache');
 

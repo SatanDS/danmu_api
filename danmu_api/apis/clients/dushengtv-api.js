@@ -1,5 +1,6 @@
 // DuShengTV receives normalized comments through its authenticated Bot gateway.
 // Keep this service token on the gateway, never in the desktop application.
+import { danmakuCacheKey, cacheableResult } from '../../utils/dushengtv-cache-key.js';
 export const DUSHENGTV_PATH = '/api/v1/dushengtv/danmaku';
 const MAX_RESPONSE = 12 * 1024 * 1024;
 const encoder = new TextEncoder();
@@ -75,11 +76,9 @@ async function readResponse(response) {
   try { return JSON.parse(text); } catch { throw new AdapterError('弹幕源返回的内容格式无效'); }
 }
 
-export function createDuShengTVHandler({ match, getComments, findLocal, readLocal, initialize = async () => {}, timeout = 60000, maxConcurrent = 4 }) {
+export function createDuShengTVHandler({ match, getComments, findLocal, readLocal, initialize = async () => {}, getCache = async () => null, runProvider = fn => fn(), getCacheRevision = () => 0, timeout = 60000, maxConcurrent = 4, now = Date.now }) {
   const pending = new Map();
-  async function fetchComments(metadata, localEnabled) {
-    await initialize();
-    if (metadata.type === 'Episode' && (!metadata.season || !metadata.episode)) return unavailable('特殊季或第 0 集暂不支持自动匹配，请在播放器导入本地弹幕');
+  async function localComments(metadata, localEnabled) {
     let comments, selection;
     // Title-only local uploads cannot prove the identity of a movie with an
     // external ID. Resolve that ID before considering any remote comments.
@@ -93,55 +92,106 @@ export function createDuShengTVHandler({ match, getComments, findLocal, readLoca
         if (stored?.comments) { comments = stored.comments; selection = { source: 'local', animeTitle: metadata.title, episodeTitle: metadata.type === 'Episode' ? `S${metadata.season}E${metadata.episode}` : metadata.title }; }
       }
     }
-    if (!comments) {
-      // Construct season/episode explicitly; episode names alone often match the wrong title.
-      const fileName = `${metadata.title}${metadata.year && metadata.type !== 'Episode' ? ` (${metadata.year})` : ''}${metadata.type === 'Episode' ? ` S${String(metadata.season).padStart(2, '0')}E${String(metadata.episode).padStart(2, '0')}` : ''}`;
-      const matched = await readResponse(await match(fileName, metadata));
-      if (matched.success === false) throw new AdapterError('弹幕匹配服务暂时不可用，请稍后重试');
-      if (matched.isMatched !== true || !Array.isArray(matched.matches) || matched.matches.length !== 1) return unavailable('無彈幕匹配', 'NO_MATCH');
-      const chosen = matched.matches[0], episodeId = Number(chosen?.episodeId);
-      if (!Number.isSafeInteger(episodeId) || episodeId <= 0) throw new AdapterError('弹幕源返回了无效的匹配编号');
-      const mediaType = `${chosen.type || ''} ${chosen.typeDescription || ''}`;
-      const movie = /\b(?:movie|film)\b|电影|電影|剧场版|劇場版/i.test(mediaType);
-      const series = /\b(?:tv|tvseries|series|show)\b|电视剧|電視劇|连续剧|連續劇/i.test(mediaType);
-      if ((metadata.type === 'Movie' && series && !movie) || (metadata.type === 'Episode' && movie && !series)) {
-        return unavailable('無彈幕匹配', 'TYPE_MISMATCH');
-      }
-      // Only an ID from the matcher is used. Never follow a client/matcher supplied URL.
-      const data = await readResponse(await getComments(episodeId, metadata));
-      comments = data.comments;
-      selection = { episodeId, animeTitle: String(chosen.animeTitle || metadata.title).slice(0, 256), episodeTitle: String(chosen.episodeTitle || '').slice(0, 256) };
-      if (/^[1-9][0-9]{0,15}$/.test(matched.identity?.doubanId || '') && ['Douban', 'Imdb', 'Tmdb'].includes(matched.identity?.matchedBy)) {
-        selection.doubanId = matched.identity.doubanId;
-        selection.matchedBy = matched.identity.matchedBy;
-      }
+    if (!comments) return null;
+    const normalized = normalizeComments(comments);
+    return normalized.length ? { available: true, comments: normalized, match: selection } : unavailable('無彈幕匹配', 'EMPTY_COMMENTS');
+  }
+  async function fetchComments(metadata) {
+    let comments, selection;
+    // Construct season/episode explicitly; episode names alone often match the wrong title.
+    const fileName = `${metadata.title}${metadata.year && metadata.type !== 'Episode' ? ` (${metadata.year})` : ''}${metadata.type === 'Episode' ? ` S${String(metadata.season).padStart(2, '0')}E${String(metadata.episode).padStart(2, '0')}` : ''}`;
+    const matched = await readResponse(await match(fileName, metadata));
+    if (matched.success === false) throw new AdapterError('弹幕匹配服务暂时不可用，请稍后重试');
+    if (matched.isMatched !== true || !Array.isArray(matched.matches) || matched.matches.length !== 1) return unavailable('無彈幕匹配', 'NO_MATCH');
+    const chosen = matched.matches[0], episodeId = Number(chosen?.episodeId);
+    if (!Number.isSafeInteger(episodeId) || episodeId <= 0) throw new AdapterError('弹幕源返回了无效的匹配编号');
+    const mediaType = `${chosen.type || ''} ${chosen.typeDescription || ''}`;
+    const movie = /\b(?:movie|film)\b|电影|電影|剧场版|劇場版/i.test(mediaType);
+    const series = /\b(?:tv|tvseries|series|show)\b|电视剧|電視劇|连续剧|連續劇/i.test(mediaType);
+    if ((metadata.type === 'Movie' && series && !movie) || (metadata.type === 'Episode' && movie && !series)) {
+      return unavailable('無彈幕匹配', 'TYPE_MISMATCH');
+    }
+    // Only an ID from the matcher is used. Never follow a client/matcher supplied URL.
+    const data = await readResponse(await getComments(episodeId, metadata));
+    comments = data.comments;
+    selection = { episodeId, animeTitle: String(chosen.animeTitle || metadata.title).slice(0, 256), episodeTitle: String(chosen.episodeTitle || '').slice(0, 256) };
+    // Inspect provenance only; never request a matcher-supplied URL. A local
+    // source reached via title mappings/merging must remain editable/deletable.
+    if (chosen.source === 'local' || String(chosen.url || '').includes('local:')) selection.source = 'local';
+    if (/^[1-9][0-9]{0,15}$/.test(matched.identity?.doubanId || '') && ['Douban', 'Imdb', 'Tmdb'].includes(matched.identity?.matchedBy)) {
+      selection.doubanId = matched.identity.doubanId;
+      selection.matchedBy = matched.identity.matchedBy;
     }
     const normalized = normalizeComments(comments);
     if (!normalized.length) return unavailable('無彈幕匹配', 'EMPTY_COMMENTS');
     return { available: true, comments: normalized, match: selection };
   }
-  return async function handle(req, { token, localEnabled = false } = {}) {
+  const cachedResponse = (entry, status, reason) => ({ ...entry.value, cache: {
+    status, stale: status === 'stale', storedAt: new Date(entry.updatedAt).toISOString(), ...(reason ? { reason } : {})
+  } });
+  return async function handle(req, { token, localEnabled = false, cacheScope = '', cacheRevision = getCacheRevision() } = {}) {
     if (req.method !== 'POST') return result(unavailable('需要 POST 请求'), 405);
     if (typeof token !== 'string' || token === '87654321' || token.length < 32) return result(unavailable('请为弹幕服务配置至少 32 位的独立 TOKEN'), 503);
     const supplied = req.headers.get('authorization')?.match(/^Bearer ([A-Za-z0-9_-]{32,256})$/)?.[1] || '';
     if (!sameToken(supplied, token)) return result(unavailable('弹幕服务验证失败'), 401);
     if (req.headers.get('content-type')?.split(';')[0].trim() !== 'application/json') return result(unavailable('需要 JSON 请求'), 415);
-    let timer;
+    let timer, previous, cache, key;
     try {
       const body = await req.text();
       if (encoder.encode(body).length > 16384) throw new AdapterError('请求内容过大', 413);
       let input; try { input = JSON.parse(body); } catch { throw new AdapterError('JSON 请求无效', 400); }
-      const metadata = metadataFrom(input), key = JSON.stringify([metadata, localEnabled]);
-      let job = pending.get(key);
-      if (!job) {
-        if (pending.size >= maxConcurrent) return result(unavailable('弹幕服务繁忙，请稍后重试'), 429);
-        job = fetchComments(metadata, localEnabled); pending.set(key, job);
-        // Keep the slot until the underlying provider settles even if callers time out.
-        void job.finally(() => { if (pending.get(key) === job) pending.delete(key); }).catch(() => {});
-      }
+      const metadata = metadataFrom(input);
+      key = danmakuCacheKey(metadata, cacheScope);
+      const run = async () => {
+        await initialize();
+        if (metadata.type === 'Episode' && (!metadata.season || !metadata.episode)) return unavailable('特殊季或第 0 集暂不支持自动匹配，请在播放器导入本地弹幕');
+        // Check uploads before the shared remote cache so adding/editing local
+        // comments becomes visible immediately even while a remote row is fresh.
+        const local = await localComments(metadata, localEnabled);
+        if (local) return local;
+        try { cache = await getCache(); previous = cache?.get(key); } catch { cache = null; }
+        if (previous && !previous.stale) return cachedResponse(previous, 'hit');
+        if (previous && previous.retryAt > now()) return cachedResponse(previous, 'stale', 'REFRESH_COOLDOWN');
+        let job = pending.get(key);
+        if (!job) {
+          if (pending.size >= maxConcurrent) {
+            if (previous) return cachedResponse(previous, 'stale', 'SERVICE_BUSY');
+            throw new AdapterError('弹幕服务繁忙，请稍后重试', 429);
+          }
+          const release = cache?.protect(key);
+          job = (async () => {
+            try {
+              const value = await (cache ? runProvider(() => fetchComments(metadata)) : fetchComments(metadata));
+              if (value.match?.source === 'local') return value;
+              if (cacheableResult(metadata, value)) {
+                let saved = false;
+                try { saved = getCacheRevision() === cacheRevision && cache?.put(key, value) === true; } catch { /* The transaction retains the last successful row. */ }
+                return saved ? { ...value, cache: { status: previous ? 'refreshed' : 'miss', stale: false, storedAt: new Date(now()).toISOString() } } : value;
+              }
+              if (previous) {
+                try { cache?.defer(key); } catch { /* Keep the stored result even if storage is unavailable. */ }
+                return cachedResponse(previous, 'stale', 'REFRESH_UNAVAILABLE');
+              }
+              return value;
+            } catch (error) {
+              if (!previous) throw error;
+              try { cache?.defer(key); } catch { /* Preserve the old row. */ }
+              return cachedResponse(previous, 'stale', 'REFRESH_FAILED');
+            } finally { release?.(); }
+          })();
+          pending.set(key, job);
+          // Keep the slot until the provider settles, even after callers time out.
+          void job.finally(() => { if (pending.get(key) === job) pending.delete(key); }).catch(() => {});
+        }
+        return job;
+      };
       const expiry = new Promise((_, reject) => { timer = setTimeout(() => reject(new AdapterError('弹幕源响应超时，请稍后重试', 504)), timeout); });
-      return result(await Promise.race([job, expiry]));
+      return result(await Promise.race([run(), expiry]));
     } catch (error) {
+      if (previous) {
+        try { cache?.defer(key); } catch { /* Preserve the old row. */ }
+        return result(cachedResponse(previous, 'stale', error?.status === 504 ? 'REFRESH_TIMEOUT' : 'REFRESH_FAILED'));
+      }
       return result(unavailable(error instanceof AdapterError ? error.message : '弹幕服务暂时不可用，请稍后重试'), error instanceof AdapterError ? error.status : 502);
     } finally { clearTimeout(timer); }
   };

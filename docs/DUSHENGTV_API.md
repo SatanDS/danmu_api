@@ -50,4 +50,10 @@ Content-Type: application/json
 
 適配器最多同時執行 4 個不同影片請求，相同進行中請求共用工作；每次最多等待 60 秒。Bot 另限制每位 TG 使用者每分鐘 12 次。對外域名入口仍驗證 Bearer，同時透過 Bot 現有 CDN 節點清單檢查回源連接；兩種驗證分別負責呼叫權限與節點權限。
 
+Docker／Node 22.13+ 預設將本接口成功取得的非空彈幕保存至本機 SQLite，所有使用者共用同作品／同集內容，容器重建後仍有效。`DUSHENGTV_CACHE_DAYS` 可設 7–30 天（預設 14），與舊接口的分鐘快取獨立。已確認的電影外部 ID 不受標題別名或年份表述差異影響；不同外部 ID 組合不擅自合併。無 ID 的電影仍區分精確片名與年份，劇集仍區分劇名、外部 ID、季、集。來源、匹配規則及輸出設定變動會使用新快取鍵。本地上傳每次優先檢查，不會被舊的遠端快取遮蓋。
+
+有資料庫快取的成功結果可多帶 `cache` 欄位，例如 `{"status":"hit","stale":false,"storedAt":"2026-10-05T00:00:00.000Z"}`。`status` 為 `miss`（首次抓取並保存）、`hit`、`refreshed` 或 `stale`。過期後由下一次訪問觸發一次共享更新；429、超時、空結果或無匹配都不覆蓋既有成功內容，而以 HTTP 200、`available:true` 回傳舊彈幕並標記 `cache.stale:true`。`cache.reason` 為 `REFRESH_FAILED`、`REFRESH_TIMEOUT`、`REFRESH_UNAVAILABLE`、`REFRESH_COOLDOWN` 或 `SERVICE_BUSY`。更新失敗至少冷卻 60 秒，避免每位使用者都重試。首次沒有成功快取時保留原本無匹配／錯誤語義。資料庫寫入失敗仍回傳本次成功取得的內容，不會刪除舊資料庫自行重建。Worker、Forward 及不支援 SQLite 的 Node 版本維持即時查詢。
+
+快取只儲存作品彈幕、匹配資料、雜湊鍵與時間，不保存 TG 使用者、裝置、Token 或 IP。容量與清理、備份方法見 Docker 教學。這能減少重複採集；首次觀看大量不同作品仍可能受到來源站頻率限制。
+
 部署與驗收見 [Docker 教學](DUSHENGTV_DOCKER.md)。

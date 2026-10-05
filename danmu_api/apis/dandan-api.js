@@ -5,7 +5,7 @@ import { simplized } from '../utils/zh-util.js';
 import { setRedisKey, updateRedisCaches } from "../utils/redis-util.js";
 import { setLocalRedisKey, updateLocalRedisCaches } from "../utils/local-redis-util.js";
 import {
-    setCommentCache, addAnime, findAnimeIdByCommentId, findTitleById, findUrlById, getCommentCache, getPreferAnimeId,
+    setCommentCache, addAnime, findAnimeIdByCommentId, findTitleById, findUrlById, getCommentCache, getPreferAnimeId, isFreshDuShengTVFetch,
     getSearchCache, removeEarliestAnime, resolveAnimeById, resolveAnimeByIdFromDetailStore, setPreferByAnimeId, setPreferForTitle, setSearchCache, storeAnimeIdsToMap, writeCacheToFile,
     updateLocalCaches, setLastSearch, getLastSearch, findAnimeTitleById, findIndexById, hasSeasonSpecificPreference, hasLegacySeasonPreference, getAddAnimeError, mergeAddAnimeError
 } from "../utils/cache-util.js";
@@ -434,6 +434,7 @@ async function executeSourceHandlers(resultData, queryTitle, targetAnimesList, r
 
 // Extracted function for GET /api/v2/search/anime
 export async function searchAnime(url, preferAnimeId = null, preferSource = null, detailStore = null, targetPlatform = null, forceRefresh = false) {
+  forceRefresh ||= isFreshDuShengTVFetch();
   // 单次搜索请求内启用 HTTP 响应复用缓存: 作为各源通用的请求级复用安全网, 借助 AsyncLocalStorage 做请求级隔离
   if (httpCacheContext.getStore()) {
     return searchAnimeBody(url, preferAnimeId, preferSource, detailStore, targetPlatform, forceRefresh);

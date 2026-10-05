@@ -1,4 +1,5 @@
 import { Envs } from './envs.js';
+import { danmakuCacheScope } from '../utils/dushengtv-cache-key.js';
 
 /**
  * 全局变量管理模块
@@ -45,6 +46,16 @@ export const Globals = {
   favoriteCache: new Map(), // 收藏剧集永久缓存，存储格式：{ keyword: { results, details, timestamp } }，无 TTL、无数量上限
   deployPlatform: '', // 部署平台配置
   currentToken: '', // 标识当前可用token
+  dushengtvCacheRevision: 0,
+  dushengtvCacheScope: null,
+
+  updateDanmakuCacheRevision() {
+    const scope = danmakuCacheScope(this.envs);
+    if (scope !== this.dushengtvCacheScope) {
+      this.dushengtvCacheScope = scope;
+      this.dushengtvCacheRevision++;
+    }
+  },
 
   /**
    * 初始化全局变量，加载环境变量依赖
@@ -54,6 +65,7 @@ export const Globals = {
   init(env = {}) {
     this.env = env;
     this.envs = Envs.load(this.env);
+    this.updateDanmakuCacheRevision();
     this.originalEnvVars = Object.fromEntries(Envs.getOriginalEnvVars());
     this.accessedEnvVars = Object.fromEntries(Envs.getAccessedEnvVars());
     return this.getConfig();
@@ -65,6 +77,7 @@ export const Globals = {
    */
   reInit() {
     this.envs = Envs.load(this.env);
+    this.updateDanmakuCacheRevision();
     this.originalEnvVars = Object.fromEntries(Envs.getOriginalEnvVars());
     this.accessedEnvVars = Object.fromEntries(Envs.getAccessedEnvVars());
     return this.getConfig();

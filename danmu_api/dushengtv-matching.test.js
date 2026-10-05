@@ -16,7 +16,7 @@ test('DuShengTV routes movie IDs only to the identified work', async t => {
   t.mock.method(process, 'cwd', () => root);
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const token = 'identity-test-'.padEnd(64, 'x');
-  const env = { TOKEN: token, SOURCE_ORDER: 'local,tencent', LOCAL_CACHE_ENABLED: 'false',
+  const env = { TOKEN: token, SOURCE_ORDER: 'local,tencent', LOCAL_CACHE_ENABLED: 'false', DUSHENGTV_CACHE_ENABLED: 'false',
     LOCAL_REDIS_URL: '', USE_BANGUMI_DATA: 'false', LOG_LEVEL: 'error',
     REMEMBER_LAST_SELECT: 'false', TITLE_TO_CHINESE: 'false', GROUP_MINUTE: '0' };
   let found = true, searches = 0, identityReads = 0, commentReads = 0;

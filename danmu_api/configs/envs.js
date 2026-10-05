@@ -749,6 +749,9 @@ export class Envs {
       'DANMU_OFFSET': { category: 'danmu', type: 'text', sources: this.ALLOWED_SOURCES, description: '弹幕时间偏移配置，格式：剧名:秒 或 剧名/季:秒 或 剧名/季/集:秒，支持指定来源：剧名@来源:秒 或 剧名/季@来源1&来源2:秒，多条用逗号分隔，正数表示弹幕延后（向右），负数表示弹幕提前（向左）。支持百分比模式：在路径或来源末尾追加 %，如 东方/S03/E02@tencent%:11，按公式 原时间 * (视频时长 + 偏移秒数) / 视频时长 缩放全部弹幕时间。示例：overlord/S01:90,re-zero/S02@bilibili:120,re-zero/S02/E03@dandan&bilibili:10,东方/S03/E02@tencent%:11' },
 
       // 缓存配置
+      'DUSHENGTV_CACHE_ENABLED': { category: 'cache', type: 'boolean', description: 'DuShengTV 本地 SQLite 弹幕缓存，默认开启；仅 Docker/Node 22.13+ 生效，保存在 .cache/dushengtv-danmaku.sqlite' },
+      'DUSHENGTV_CACHE_DAYS': { category: 'cache', type: 'number', description: 'DuShengTV 共享弹幕缓存有效期（天），默认14，可选7–30；到期访问时更新，失败保留旧弹幕', min: 7, max: 30 },
+      'DUSHENGTV_CACHE_MAX_MB': { category: 'cache', type: 'number', description: 'DuShengTV SQLite 缓存内容容量（MiB），默认512，可选64–4096；超过后淘汰较久未访问内容', min: 64, max: 4096 },
       'LOCAL_CACHE_ENABLED': { category: 'cache', type: 'boolean', description: '通用文件缓存开关，默认开启且仍需已有 .cache 目录；关闭后不读取或写入通用文件缓存，包括收藏与定时计划；已配置 Upstash 时仍可持久化。不影响本地弹幕文件、Bangumi Data 或 Redis' },
       'SEARCH_CACHE_MINUTES': { category: 'cache', type: 'number', description: '搜索结果缓存时间(分钟)，默认3', min: 1, max: 120 },
       'COMMENT_CACHE_MINUTES': { category: 'cache', type: 'number', description: '弹幕缓存时间(分钟)，默认3', min: 1, max: 120 },
@@ -818,6 +821,9 @@ export class Envs {
       searchCacheMinutes: this.get('SEARCH_CACHE_MINUTES', 3, 'number'), // 搜索结果缓存时间配置（分钟，默认 3）
       commentCacheMinutes: this.get('COMMENT_CACHE_MINUTES', 3, 'number'), // 弹幕缓存时间配置（分钟，默认 3）
       commentCacheMinCount: this.get('COMMENT_CACHE_MIN_COUNT', 100, 'number'), // 弹幕缓存最少条数，低于该值时忽略缓存（默认 100，0 表示关闭）
+      dushengtvCacheEnabled: this.get('DUSHENGTV_CACHE_ENABLED', true, 'boolean'),
+      dushengtvCacheDays: Math.max(7, Math.min(30, Math.trunc(this.get('DUSHENGTV_CACHE_DAYS', 14, 'number') || 14))),
+      dushengtvCacheMaxMB: Math.max(64, Math.min(4096, Math.trunc(this.get('DUSHENGTV_CACHE_MAX_MB', 512, 'number') || 512))),
       hongguoMergeAllEpisodes: this.get('HONGGUO_MERGE_ALL_EPISODES', false, 'boolean'), // 红果短剧是否合并全集弹幕（默认 false）
       convertTopBottomToScroll: this.get('CONVERT_TOP_BOTTOM_TO_SCROLL', false, 'boolean'), // 顶部/底部弹幕转换为浮动弹幕配置（默认 false，禁用转换）
       convertColor: this.get('CONVERT_COLOR', 'default', 'string'), // 弹幕转换颜色配置，支持 default、white、color（默认 default，禁用转换）
