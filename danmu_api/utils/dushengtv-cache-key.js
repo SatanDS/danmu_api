@@ -24,7 +24,7 @@ export function danmakuCacheKey(metadata, scope = '') {
   const identity = metadata.type === 'Movie' && ids.length
     ? { ids }
     : { title: metadata.title.normalize('NFC'), year: metadata.year ?? null, ids };
-  return JSON.stringify(['dushengtv-comments-v1', scope, metadata.type, identity,
+  return JSON.stringify([metadata.type === 'Episode' ? 'dushengtv-comments-episode-v2' : 'dushengtv-comments-v1', scope, metadata.type, identity,
     metadata.type === 'Episode' ? [metadata.season, metadata.episode] : null]);
 }
 

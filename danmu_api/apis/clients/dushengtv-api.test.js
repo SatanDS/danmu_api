@@ -135,7 +135,7 @@ test('series premiere year is not used as a later season release year; local Sxx
 test('local uploaded comments take precedence, but title-level comments cannot attach to an arbitrary episode', async () => {
   const criteria = [];
   const local = fixture({
-    findLocal: async query => { criteria.push(query); return { resourceKey: 'fixture', episode: 4 }; },
+    findLocal: async query => { criteria.push(query); return { resourceKey: 'fixture', episode: 4, season: 2 }; },
     readLocal: async key => { assert.equal(key, 'fixture'); return { comments: [{ time: 2, text: 'Local' }] }; }
   });
   const response = await local.request(episode, { localEnabled: true });

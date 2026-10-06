@@ -86,7 +86,7 @@ export function createDuShengTVHandler({ match, getComments, findLocal, readLoca
     if (!identifiedMovie && (metadata.type !== 'Movie' || Number.isInteger(metadata.year)) && localEnabled && findLocal && readLocal) {
       const local = await findLocal({ ...metadata, type: metadata.type === 'Episode' ? 'tv' : 'movie', season: metadata.season ?? 1 });
       // Do not attach title-level/movie comments to an arbitrary episode.
-      if (local && (metadata.type !== 'Episode' || Number(local.episode) === metadata.episode)
+      if (local && (metadata.type !== 'Episode' || (Number(local.episode) === metadata.episode && Number(local.season) === metadata.season))
           && (metadata.type !== 'Movie' || local.year === metadata.year)) {
         const stored = await readLocal(local.resourceKey);
         if (stored?.comments) { comments = stored.comments; selection = { source: 'local', animeTitle: metadata.title, episodeTitle: metadata.type === 'Episode' ? `S${metadata.season}E${metadata.episode}` : metadata.title }; }

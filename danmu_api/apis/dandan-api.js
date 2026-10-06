@@ -20,6 +20,7 @@ import {
 import { getTMDBChineseTitle, getTmdbExternalIds, getTmdbSeasonBoundaries } from "../utils/tmdb-util.js";
 import { getDoubanInfoByImdbId } from '../utils/douban-util.js';
 import { filterMovieCandidates, hasMovieProviderId, resolveMovieIdentity } from '../utils/dushengtv-match-util.js';
+import { filterEpisodeCandidates, exactEpisode } from '../utils/dushengtv-episode-match.js';
 import { applyMergeLogic, mergeDanmakuList, MERGE_DELIMITER, alignSourceTimelines, sanitizeUrl } from "../utils/merge-util.js";
 import { getHanjutvSourceLabel } from "../utils/hanjutv-util.js";
 import AIClient from '../utils/ai-util.js';
@@ -1978,6 +1979,33 @@ async function matchDuShengTVMovie(req, metadata, preferredPlatform) {
   });
 }
 
+async function matchDuShengTVEpisode(req, metadata, preferredPlatform) {
+  const details = new Map();
+  const platforms = createMatchPlatformOrder(preferredPlatform);
+  const search = await searchAnime(buildSearchAnimeUrl(req.url, metadata.title, metadata.season, metadata.episode), null, null, details, platforms[0] || null);
+  const data = await search.json();
+  const candidates = data?.success && Array.isArray(data.animes) ? filterEpisodeCandidates(data.animes, metadata) : [];
+  let selectedAnime, selectedEpisode;
+  for (const platform of [...new Set([...platforms, null])]) {
+    for (const anime of candidates) {
+      const bangumi = getBangumiDataForMatch(anime, details);
+      if (!bangumi?.success || !Array.isArray(bangumi.bangumi?.episodes)) continue;
+      const episodes = exactEpisode(bangumi.bangumi.episodes, metadata).filter(ep => !platform ||
+        getPlatformMatchScore(extractEpisodeTitle(ep.episodeTitle), platform) > 0);
+      // Multiple versions from different sources are handled by platform order;
+      // multiple distinct episodes within one source are not guessed.
+      const unique = [...new Map(episodes.map(ep => [ep.url || ep.episodeId, ep])).values()];
+      if (unique.length === 1) { selectedAnime = anime; selectedEpisode = unique[0]; break; }
+    }
+    if (selectedEpisode) break;
+  }
+  const matches = selectedEpisode ? [AnimeMatch.fromJson({ episodeId: selectedEpisode.episodeId,
+    animeId: selectedAnime.animeId, animeTitle: selectedAnime.animeTitle, episodeTitle: selectedEpisode.episodeTitle,
+    type: selectedAnime.type, typeDescription: selectedAnime.typeDescription, shift: 0,
+    imageUrl: selectedAnime.imageUrl, url: selectedEpisode.url || '' })] : [];
+  return jsonResponse({ errorCode: 0, success: true, errorMessage: '', isMatched: matches.length === 1, matches });
+}
+
 // Extracted function for POST /api/v2/match
 export async function matchAnime(url, req, clientIp, validatedMetadata = null) {
   try {
@@ -2014,6 +2042,9 @@ export async function matchAnime(url, req, clientIp, validatedMetadata = null) {
     const parsed = validatedMetadata ? { ...validatedMetadata } : await extractTitleSeasonEpisode(cleanFileName);
     if (validatedMetadata?.type === 'Movie') {
       return await matchDuShengTVMovie(req, parsed, preferredPlatform);
+    }
+    if (validatedMetadata?.type === 'Episode') {
+      return await matchDuShengTVEpisode(req, parsed, preferredPlatform);
     }
     if (validatedMetadata && globals.titleToChinese) {
       parsed.title = await getTMDBChineseTitle(parsed.title, parsed.season, parsed.episode);
